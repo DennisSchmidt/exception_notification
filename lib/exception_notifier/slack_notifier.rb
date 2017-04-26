@@ -20,36 +20,18 @@ module ExceptionNotifier
     end
 
     def call(exception, options={})
-      errors_count = options[:accumulated_errors_count].to_i
-      measure_word = errors_count > 1 ? errors_count : (exception.class.to_s =~ /^[aeiou]/i ? 'An' : 'A')
-      exception_name = "*#{measure_word}* `#{exception.class.to_s}`"
-
-      if options[:env].nil?
-        data = options[:data] || {}
-        text = "#{exception_name} *occured in background*\n"
-      else
-        env = options[:env]
-        data = (env['exception_notifier.exception_data'] || {}).merge(options[:data] || {})
-
-        kontroller = env['action_controller.instance']
-        request = "#{env['REQUEST_METHOD']} <#{env['REQUEST_URI']}>"
-        text = "#{exception_name} *occurred while* `#{request}`"
-        text += " *was processed by* `#{kontroller.controller_name}##{kontroller.action_name}`" if kontroller
-        text += "\n"
-      end
-
+      text = text(exception, options)
       clean_message = exception.message.gsub("`", "'")
-      fields = [ { title: 'Exception', value: clean_message } ]
 
-      fields.push({ title: 'Hostname', value: Socket.gethostname })
+      fields = [
+        { title: 'Exception', value: clean_message },
+        { title: 'Hostname', value: Socket.gethostname },
+        { title: 'Occurred at', value: Time.now.utc.iso8601(3) }
+      ]
 
-      if exception.backtrace
-        formatted_backtrace = @backtrace_lines ? "```#{exception.backtrace.first(@backtrace_lines).join("\n")}```" : "```#{exception.backtrace.join("\n")}```"
-        fields.push({ title: 'Backtrace', value: formatted_backtrace })
-      end
+      fields.push({ title: 'Backtrace', value: formatted_backtrace(exception) }) if exception.backtrace
 
-      unless data.empty?
-        deep_reject(data, @ignore_data_if) if @ignore_data_if.is_a?(Proc)
+      if (data = additional_data(options)).present?
         data_string = data.map{|k,v| "#{k}: #{v}"}.join("\n")
         fields.push({ title: 'Data', value: "```#{data_string}```" })
       end
@@ -64,6 +46,46 @@ module ExceptionNotifier
     end
 
     protected
+
+    def text(exception, options)
+      exception_name = exception_name(exception, options[:accumulated_errors_count].to_i)
+
+      text = "*At* `#{Time.now.utc.iso8601(3)}`"
+
+      if options[:env].nil?
+        text +=" #{exception_name} *occured in background*\n"
+      else
+        env = options[:env]
+        kontroller = env['action_controller.instance']
+        request = "#{env['REQUEST_METHOD']} <#{env['REQUEST_URI']}>"
+
+        text += " #{exception_name} *occurred while* `#{request}`"
+        text += " *was processed by* `#{kontroller.controller_name}##{kontroller.action_name}`" if kontroller
+        text += "\n"
+      end
+
+      text
+    end
+
+    def exception_name(exception, errors_count)
+      measure_word = errors_count > 1 ? errors_count : (exception.class.to_s =~ /^[aeiou]/i ? 'an' : 'a')
+      "*#{measure_word}* `#{exception.class.to_s}`"
+    end
+
+    def formatted_backtrace(exception)
+      @backtrace_lines ? "```#{exception.backtrace.first(@backtrace_lines).join("\n")}```" : "```#{exception.backtrace.join("\n")}```"
+    end
+
+    def additional_data(options)
+      data = options[:data] || {}
+      if options[:env]
+        data = (options[:env]['exception_notifier.exception_data'] || {}).merge(data)
+      end
+
+      deep_reject(data, @ignore_data_if) if @ignore_data_if.is_a?(Proc)
+
+      data
+    end
 
     def valid?
       !@notifier.nil?
